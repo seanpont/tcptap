@@ -15,20 +15,16 @@ type User struct {
 	Id      int64
 	Address string
 	Name    string
-	Avatar  string
-	Version int
 }
 
 type Conversation struct {
-	Id      int64
-	Title   string
-	Version int
+	Id    int64
+	Title string
 }
 
 type Participant struct {
 	ConversationId int64
 	UserId         int64
-	Version        int
 }
 
 type Message struct {
@@ -57,9 +53,7 @@ func (db *DB) init() {
 	err := conn.Exec(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     address TEXT UNIQUE, 
-    name TEXT, 
-    avatar TEXT,
-    version INTEGER DEFAULT 1
+    name TEXT
   )`)
 	gobro.CheckErr(err)
 }
@@ -96,8 +90,8 @@ func (db *DB) CreateUser(address, name string) (userId int64, err error) {
 	conn := db.Conn()
 	defer conn.Close()
 	err = conn.Exec(
-		"INSERT INTO users(address, name, avatar) VALUES (?, ?, ?)",
-		user.Address, user.Name, user.Avatar)
+		"INSERT INTO users(address, name) VALUES (?, ?)",
+		user.Address, user.Name)
 	userId = conn.LastInsertId()
 	return
 }
@@ -106,9 +100,9 @@ func (db *DB) GetUserById(userId int64) *User {
 	conn := db.Conn()
 	defer conn.Close()
 	stmt, err := conn.Query(
-		"SELECT id, address, name, avatar, version FROM users WHERE id = ?", userId)
+		"SELECT id, address, name FROM users WHERE id = ?", userId)
 	gobro.CheckErr(err)
 	var user User
-	stmt.Scan(&user.Id, &user.Address, &user.Name, &user.Avatar, &user.Version)
+	stmt.Scan(&user.Id, &user.Address, &user.Name)
 	return &user
 }

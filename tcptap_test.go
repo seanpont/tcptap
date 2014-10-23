@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestServices(t *testing.T) {
+func TestDB(t *testing.T) {
 	assert := assert.Assert(t)
 	db := NewTempDB()
 	defer db.Destroy()
@@ -16,8 +16,10 @@ func TestServices(t *testing.T) {
 	assert.Equal(edithId, int64(1))
 	edith := db.GetUserById(edithId)
 	assert.NotNil(edith)
+	assert.True(edith.Id > 0, "Id > 0")
 	assert.Equal(edith.Address, "edith@circletech.com")
 	assert.Equal(edith.Name, "Edith Carmela")
+
 	// roland, _ := db.CreateUser("Roland Sawyer", "roland@circletech.com")
 	// jackie, _ := db.CreateUser("Jackie Richards", "jackie@circletech.com")
 
