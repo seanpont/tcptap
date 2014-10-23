@@ -56,6 +56,11 @@ func (db *DB) init() {
     name TEXT
   )`)
 	gobro.CheckErr(err)
+	err = conn.Exec(`CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT UNIQUE
+  )`)
+	gobro.CheckErr(err)
 }
 
 func (db *DB) Destroy() {
@@ -63,6 +68,8 @@ func (db *DB) Destroy() {
 }
 
 func NewDB(fname string) *DB {
+	fname = os.TempDir() + fname + ".sqlite"
+	os.Remove(fname)
 	db := &DB{
 		fname: fname,
 	}
@@ -70,27 +77,17 @@ func NewDB(fname string) *DB {
 	return db
 }
 
-func NewTempDB() *DB {
-	fname := os.TempDir() + "tcptap.sqlite"
-	os.Remove(fname)
-	return NewDB(fname)
-}
-
 // ===== User ================================================================
 
-func (db *DB) CreateUser(address, name string) (userId int64, err error) {
-	if address == "" {
+func (db *DB) InsertUser(user User) (userId int64, err error) {
+	if user.Address == "" {
 		return userId, errors.New("Address required")
 	}
-	address = strings.ToLower(address)
-	user := User{
-		Address: strings.ToLower(address),
-		Name:    name,
-	}
+	user.Address = strings.ToLower(user.Address)
 	conn := db.Conn()
 	defer conn.Close()
 	err = conn.Exec(
-		"INSERT INTO users(address, name) VALUES (?, ?)",
+		"INSERT OR REPLACE INTO users(address, name) VALUES (?, ?)",
 		user.Address, user.Name)
 	userId = conn.LastInsertId()
 	return
@@ -105,4 +102,28 @@ func (db *DB) GetUserById(userId int64) *User {
 	var user User
 	stmt.Scan(&user.Id, &user.Address, &user.Name)
 	return &user
+}
+
+// ===== CONVERSATIONS =======================================================
+
+func (db *DB) GetConversations() []Conversation {
+	conn := db.Conn()
+	defer conn.Close()
+	conversations := make([]Conversation, 0)
+	stmt, err := conn.Query("SELECT id, title FROM conversations")
+	for ; err == nil; stmt.Next() {
+		var conversation Conversation
+		stmt.Scan(&conversation.Id, &conversation.Title)
+		conversations = append(conversations, conversation)
+	}
+	return conversations
+}
+
+func (db *DB) InsertConversation(conversation Conversation) (conversationId int64, err error) {
+	conn := db.Conn()
+	defer conn.Close()
+	err = conn.Exec(
+		"INSERT OR IGNORE INTO conversations(title) VALUES (?)", conversation.Title)
+	conversationId = conn.LastInsertId()
+	return
 }
