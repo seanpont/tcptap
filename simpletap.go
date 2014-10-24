@@ -11,7 +11,7 @@ import (
 
 // ===== SERVER ==============================================================
 
-func SimpleTap(args []string) {
+func simpleTapServer(args []string) {
 	gobro.CheckArgs(args, 1, "Usage: tcptap SimpleTap <port>")
 	NewSimpleServer().listen(args[0])
 }
