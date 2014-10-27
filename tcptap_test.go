@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "fmt"
 	"github.com/seanpont/assert"
 	"testing"
 )
@@ -12,6 +13,12 @@ func connect(server *ConnTapServer, user string) (client *ConnTapClient) {
 	go client.sync(serverToClient, clientToServer)
 	go server.handle(clientToServer, serverToClient)
 	return client
+}
+
+func drain(tapChan chan *Tap, count int) {
+	for i := 0; i < count; i++ {
+		_ = <-tapChan
+	}
 }
 
 func TestStreamTap(t *testing.T) {
@@ -45,4 +52,12 @@ func TestStreamTap(t *testing.T) {
 	assert.Equal(len(conversation.Users), 3) // sean, alex, will
 	assert.Equal(len(conversation.Messages), 1)
 
+	// Alex joins the party
+	alex := connect(server, "alex")
+	drain(alex.syncToUser, 3) // sean auth, cconversation, alex auth
+	assert.Equal(len(alex.data.Conversations), 1)
+	alex.userToSync <- NewTap(TYPE_MESSAGE, "alex", "bananas", "Hey Sean")
+	drain(alex.syncToUser, 1) // message
+	drain(sean.syncToUser, 2) // alex auth, message
+	assert.Equal(sean.data.Conversations["bananas"].Messages[1].Body, "Hey Sean")
 }

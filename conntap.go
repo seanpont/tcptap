@@ -115,7 +115,8 @@ func (d *Data) Invite(tap *Tap) error {
 		d.Users[user] = true
 		c.Users[user] = true
 	}
-	c.NewMessage(tap.User, fmt.Sprintf("%s invited %s", tap.User, strings.Join(tap.Args, ", ")))
+	c.NewMessage(tap.User,
+		fmt.Sprintf("%s invited %s", tap.User, strings.Join(tap.Args, ", ")))
 	return nil
 }
 
@@ -335,7 +336,7 @@ func notify(tapChan chan<- bool) {
 	}
 }
 
-// ===== Client ===============================================================
+// ===== Client ==============================================================
 
 func connTapClient(args []string) {
 	gobro.CheckArgs(args, 1, "Usage: tcptap connTapClient <host:port>")
