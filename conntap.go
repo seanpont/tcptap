@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/seanpont/gobro"
 	"io"
@@ -21,8 +22,12 @@ type Message struct {
 
 type Conversation struct {
 	Title    string
-	Users    []string
-	Messages []Message
+	Users    map[string]bool
+	Messages []*Message
+}
+
+func (c *Conversation) NewMessage(user, message string) {
+	c.Messages = append(c.Messages, &Message{User: user, Body: message})
 }
 
 type Data struct {
@@ -39,88 +44,99 @@ func NewData() *Data {
 	}
 }
 
-func (d *Data) Update(tap *Tap) {
+func (d *Data) Update(tap *Tap) (err error) {
 	switch tap.Type {
 	case TYPE_AUTH:
-		if tap.User != "" {
-			d.Users[tap.User] = true
-		}
+		err = d.CreateUser(tap)
 	case TYPE_CONVERSATION:
-		fmt.Println("Create conversation", tap.Conversation, d.Conversations[tap.Conversation])
-		if tap.Conversation != "" && d.Conversations[tap.Conversation] == nil {
-			d.Conversations[tap.Conversation] = NewConversation(tap)
-		}
+		err = d.CreateConversation(tap)
 	case TYPE_MESSAGE:
-		if tap.Conversation != "" && tap.Value != "" {
-			conversation := d.Conversations[tap.Conversation]
-			if conversation != nil {
-				conversation.SendMessage(tap)
-			}
-		}
+		err = d.SendMessage(tap)
 	case TYPE_INVITE:
-		if tap.Conversation != "" && tap.Value != "" {
-			user := tap.Value
-			conversation := d.Conversations[tap.Conversation]
-			if conversation != nil {
-				d.Users[user] = true
-				conversation.AddUser(user)
-			}
-		}
+		err = d.Invite(tap)
 	}
+	return
 }
 
-func NewConversation(tap *Tap) *Conversation {
-	c := Conversation{
-		Title:    tap.Conversation,
-		Users:    make([]string, 0),
-		Messages: make([]Message, 0),
+func (d *Data) CreateUser(tap *Tap) error {
+	if tap.User == "" {
+		return errors.New("User name required")
 	}
-	c.Users = append(c.Users, tap.User)
-	for user, _ := range tap.Params {
-		c.Users = append(c.Users, user)
+	d.Users[tap.User] = true
+	return nil
+}
+
+func (d *Data) CreateConversation(tap *Tap) error {
+	title := tap.Conversation
+	if title == "" {
+		return errors.New("Conversation title required")
+	}
+	if d.Conversations[title] != nil {
+		return errors.New("Conversation '" + title + "' already exists")
+	}
+	c := &Conversation{
+		Title:    title,
+		Users:    make(map[string]bool, 0),
+		Messages: make([]*Message, 0),
+	}
+	c.Users[tap.User] = true
+	for _, user := range tap.Args {
+		d.Users[user] = true
+		c.Users[user] = true
 	}
 	if tap.Value != "" {
-		c.SendMessage(tap)
+		c.NewMessage(tap.User, tap.Value)
 	}
-	return &c
+	d.Conversations[c.Title] = c
+	return nil
 }
 
-func (c *Conversation) SendMessage(tap *Tap) {
-	c.Messages = append(c.Messages, Message{
-		User: tap.User,
-		Body: tap.Value,
-	})
+func (d *Data) SendMessage(tap *Tap) error {
+	if tap.Conversation == "" || tap.Value == "" {
+		return errors.New("Conversation and Value (message body) required")
+	}
+	c := d.Conversations[tap.Conversation]
+	if c == nil {
+		return errors.New("Conversation '" + tap.Conversation + "' not found")
+	}
+	c.NewMessage(tap.User, tap.Value)
+	return nil
 }
 
-func (c *Conversation) AddUser(user string) {
-	if !gobro.Contains(c.Users, user) {
-		c.Users = append(c.Users, user)
+func (d *Data) Invite(tap *Tap) error {
+	if tap.Conversation == "" || len(tap.Args) == 0 {
+		return errors.New("Conversation and args (new participants) required")
 	}
+	c := d.Conversations[tap.Conversation]
+	if c == nil {
+		return errors.New("Conversation '" + tap.Conversation + "' not found")
+	}
+	for _, user := range tap.Args {
+		d.Users[user] = true
+		c.Users[user] = true
+	}
+	c.NewMessage(tap.User, fmt.Sprintf("%s invited %s", tap.User, strings.Join(tap.Args, ", ")))
+	return nil
 }
 
 // ===== TAP PROTOCOL ========================================================
 
 type Tap struct {
-	Id           int               `json:"id"`
-	Type         string            `json:"type"`
-	User         string            `json:"user"`
-	Conversation string            `json:"conversation"`
-	Value        string            `json:"value"`
-	Params       map[string]string `json:"params"`
+	Id           int      `json:"id"`
+	Type         string   `json:"type"`
+	User         string   `json:"user"`
+	Conversation string   `json:"conversation"`
+	Value        string   `json:"value"`
+	Args         []string `json:"args"`
 }
 
-func NewTap(_type, user, conversation, value string, params ...string) *Tap {
+func NewTap(_type, user, conversation, value string, args ...string) *Tap {
 	tap := Tap{
 		Type:         _type,
 		User:         user,
 		Conversation: conversation,
 		Value:        value,
-	}
-	if len(params) > 0 {
-		tap.Params = make(map[string]string)
-		for i := 0; i < len(params); i += 2 {
-			tap.Params[params[i]] = params[i+1]
-		}
+		Args:         args,
 	}
 	return &tap
 }
@@ -132,7 +148,6 @@ const (
 	TYPE_CONVERSATION = "conversation"
 	TYPE_MESSAGE      = "message"
 	TYPE_INVITE       = "invite"
-	PARAM_TAP_ID      = "tapId"
 )
 
 // ===== NETWORKING ==========================================================
@@ -206,7 +221,11 @@ func (s *ConnTapServer) processTaps() {
 	for {
 		tap := <-s.tapCore
 		fmt.Println("Processing: ", tap)
-		s.data.Update(tap)
+		err := s.data.Update(tap)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			continue
+		}
 
 		tap.Id = len(s.data.Taps)
 		s.data.Taps = append(s.data.Taps, tap)
@@ -239,6 +258,7 @@ func (s *ConnTapServer) handle(inbox <-chan *Tap, outbox chan<- *Tap) {
 
 	// The first tap must be an auth tap
 	authTap, ok := <-inbox
+
 	if !ok {
 		return
 	}
@@ -252,7 +272,7 @@ func (s *ConnTapServer) handle(inbox <-chan *Tap, outbox chan<- *Tap) {
 
 	user := authTap.User
 	tapCursor := 0
-	tapIdStr := authTap.Params[PARAM_TAP_ID]
+	tapIdStr := authTap.Value
 	if tapIdStr != "" {
 		tapCursor, _ = strconv.Atoi(tapIdStr)
 	}
@@ -327,12 +347,16 @@ type ConnTapClient struct {
 	user         string
 	data         *Data
 	conversation string
+	userToSync   chan *Tap
+	syncToUser   chan *Tap
 }
 
 func NewConnTapClient(user string) *ConnTapClient {
 	return &ConnTapClient{
-		user: user,
-		data: NewData(),
+		user:       user,
+		data:       NewData(),
+		userToSync: make(chan *Tap),
+		syncToUser: make(chan *Tap),
 	}
 }
 
@@ -344,19 +368,15 @@ func (c *ConnTapClient) connect(service string) {
 	fmt.Println("Connected!")
 
 	inbox, outbox := connToChan(conn)
-	userToSync := make(chan *Tap)
-	syncToUser := make(chan *Tap)
-	go c.sync(inbox, outbox, userToSync, syncToUser)
-	c.handle(syncToUser, userToSync)
+	go c.sync(inbox, outbox)
+	c.handle()
 }
 
-func (c *ConnTapClient) sync(
-	inbox <-chan *Tap, outbox chan<- *Tap, userToSync <-chan *Tap, syncToUser chan<- *Tap) {
-
+func (c *ConnTapClient) sync(inbox <-chan *Tap, outbox chan<- *Tap) {
 	defer close(outbox)
 
 	// Authentication
-	outbox <- NewTap(TYPE_AUTH, c.user, "", "")
+	outbox <- NewTap(TYPE_AUTH, c.user, "", "0")
 
 	// Listen loop
 	for {
@@ -365,9 +385,14 @@ func (c *ConnTapClient) sync(
 			if !ok {
 				return
 			}
-			c.data.Update(tap)
-			syncToUser <- tap
-		case tap, ok := <-userToSync:
+			fmt.Printf("%s received: %v\n", c.user, tap)
+			err := c.data.Update(tap)
+			if err != nil {
+				fmt.Printf("%s encountered error while updating data: %d", err)
+				return
+			}
+			c.syncToUser <- tap
+		case tap, ok := <-c.userToSync:
 			if !ok {
 				fmt.Println("userToSync closed")
 				return
@@ -377,10 +402,10 @@ func (c *ConnTapClient) sync(
 	}
 }
 
-func (c *ConnTapClient) handle(syncToUser <-chan *Tap, userToSync chan<- *Tap) {
+func (c *ConnTapClient) handle() {
 	defer func() {
 		fmt.Println("handle: close userToSync")
-		close(userToSync)
+		close(c.userToSync)
 	}()
 
 	prompt := make(chan string)
@@ -397,19 +422,19 @@ func (c *ConnTapClient) handle(syncToUser <-chan *Tap, userToSync chan<- *Tap) {
 
 	for {
 		select {
-		case tap := <-syncToUser:
+		case tap := <-c.syncToUser:
 			print(fmt.Sprint(tap))
 		case cmd, ok := <-prompt:
 			if !ok {
 				print("Goodbye")
 				return
 			}
-			c.handleCmd(cmd, userToSync)
+			c.handleCmd(cmd)
 		}
 	}
 }
 
-func (c *ConnTapClient) handleCmd(message string, userToSync chan<- *Tap) {
+func (c *ConnTapClient) handleCmd(message string) {
 	parts := strings.Split(message, " ")
 	cmd := parts[0]
 	switch cmd {
@@ -427,7 +452,7 @@ func (c *ConnTapClient) handleCmd(message string, userToSync chan<- *Tap) {
 		}
 	case "create":
 		title := parts[1]
-		userToSync <- &Tap{
+		c.userToSync <- &Tap{
 			Type:         TYPE_CONVERSATION,
 			Conversation: title,
 		}
@@ -443,13 +468,13 @@ func (c *ConnTapClient) handleCmd(message string, userToSync chan<- *Tap) {
 			print(message.User + ": " + message.Body)
 		}
 	case "invite":
-		userToSync <- &Tap{
+		c.userToSync <- &Tap{
 			Type:         TYPE_INVITE,
 			Conversation: c.conversation,
 			Value:        parts[1],
 		}
 	case "send":
-		userToSync <- &Tap{
+		c.userToSync <- &Tap{
 			Type:         TYPE_MESSAGE,
 			Conversation: c.conversation,
 			Value:        strings.Join(parts[1:], " "),
