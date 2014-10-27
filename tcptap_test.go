@@ -1,36 +1,41 @@
 package main
 
-// import (
-// 	_ "fmt"
-// 	"github.com/seanpont/assert"
-// 	"testing"
-// )
+import (
+	"fmt"
+	"github.com/seanpont/assert"
+	"testing"
+)
 
-// func TestDB(t *testing.T) {
-// 	assert := assert.Assert(t)
-// 	db := NewDB("test")
-// 	defer db.Destroy()
-// 	edithId, err := db.InsertUser(User{
-// 		Address: "Edith@circletech.com",
-// 		Name:    "Edith Carmela",
-// 	})
-// 	assert.Nil(err)
-// 	assert.Equal(edithId, int64(1))
-// 	edith := db.GetUserById(edithId)
-// 	assert.NotNil(edith)
-// 	assert.True(edith.Id > 0, "Id > 0")
-// 	assert.Equal(edith.Address, "edith@circletech.com")
-// 	assert.Equal(edith.Name, "Edith Carmela")
+func TestStreamTap(t *testing.T) {
+	assert := assert.Assert(t)
 
-// 	conversations := db.GetConversations()
-// 	assert.Equal(len(conversations), 0)
+	server := NewConnTapServer()
+	client := NewConnTapClient("sean")
 
-// 	conversationId, err := db.InsertConversation(Conversation{
-// 		Title: "foobar",
-// 	})
-// 	assert.Nil(err)
-// 	assert.True(conversationId > 0, "conversationId > 0")
-// 	conversations = db.GetConversations()
-// 	assert.Equal(len(conversations), 1)
+	// wire them up!
+	clientToServer := make(chan *Tap)
+	serverToClient := make(chan *Tap)
+	syncToUser := make(chan *Tap)
+	userToSync := make(chan *Tap)
 
-// }
+	go server.handle(clientToServer, serverToClient)
+	go client.sync(serverToClient, clientToServer, userToSync, syncToUser)
+
+	// We should get our auth back
+	authTap := <-syncToUser
+	fmt.Println(authTap)
+	assert.NotNil(authTap)
+
+	//Create a conversation
+	userToSync <- NewTap(TYPE_CONVERSATION, "", "bananas", "", "alex", "", "will", "")
+	conversationTap := <-syncToUser
+	fmt.Println(conversationTap)
+	assert.NotNil(conversationTap)
+
+	assert.Equal(len(server.data.Conversations), 1)
+	assert.Equal(len(client.data.Conversations["bananas"].Users), 3) // sean, alex, will
+
+	assert.Equal(len(client.data.Conversations), 1)
+	assert.Equal(len(client.data.Conversations["bananas"].Users), 3) // sean, alex, will
+
+}

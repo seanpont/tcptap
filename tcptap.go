@@ -8,6 +8,6 @@ import (
 func main() {
 	gobro.NewCommandMap(
 		simpleTapServer,
-		streamTapServer,
-		streamTapClient).Run(os.Args)
+		connTapServer,
+		connTapClient).Run(os.Args)
 }
