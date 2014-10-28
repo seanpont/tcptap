@@ -20,10 +20,27 @@ type Message struct {
 	Body string
 }
 
+func (m *Message) String() string {
+	return fmt.Sprintf("%s: %s", m.User, m.Body)
+}
+
 type Conversation struct {
 	Title    string
 	Users    map[string]bool
 	Messages []*Message
+}
+
+func (c *Conversation) String() string {
+	return c.Title
+}
+
+func (c *Conversation) LastMessage() string {
+	last := len(c.Messages) - 1
+	if last >= 0 {
+		return c.Messages[last].String()
+	} else {
+		return ""
+	}
 }
 
 func (c *Conversation) NewMessage(user, message string) {
@@ -347,7 +364,7 @@ func connTapClient(args []string) {
 type ConnTapClient struct {
 	user         string
 	data         *Data
-	conversation string
+	conversation *Conversation
 	userToSync   chan *Tap
 	syncToUser   chan *Tap
 }
@@ -362,11 +379,11 @@ func NewConnTapClient(user string) *ConnTapClient {
 }
 
 func (c *ConnTapClient) connect(service string) {
-	fmt.Println("Connecting...")
+	c.print("Connecting...")
 	conn, err := net.Dial("tcp", service)
 	gobro.CheckErr(err)
 	defer conn.Close()
-	fmt.Println("Connected!")
+	c.print("Connected!")
 
 	inbox, outbox := connToChan(conn)
 	go c.sync(inbox, outbox)
@@ -386,16 +403,16 @@ func (c *ConnTapClient) sync(inbox <-chan *Tap, outbox chan<- *Tap) {
 			if !ok {
 				return
 			}
-			fmt.Printf("%s received: %v\n", c.user, tap)
+			// fmt.Printf("%s received: %v\n", c.user, tap)
 			err := c.data.Update(tap)
 			if err != nil {
-				fmt.Printf("%s encountered error while updating data: %d", err)
+				c.print("%s encountered error while updating data: %d", err)
 				return
 			}
 			c.syncToUser <- tap
 		case tap, ok := <-c.userToSync:
 			if !ok {
-				fmt.Println("userToSync closed")
+				c.print("userToSync closed")
 				return
 			}
 			outbox <- tap
@@ -405,7 +422,7 @@ func (c *ConnTapClient) sync(inbox <-chan *Tap, outbox chan<- *Tap) {
 
 func (c *ConnTapClient) handle() {
 	defer func() {
-		fmt.Println("handle: close userToSync")
+		c.print("handle: close userToSync")
 		close(c.userToSync)
 	}()
 
@@ -421,13 +438,15 @@ func (c *ConnTapClient) handle() {
 		}
 	}()
 
+	c.printHelp()
+
 	for {
 		select {
-		case tap := <-c.syncToUser:
-			print(fmt.Sprint(tap))
+		case _ = <-c.syncToUser:
+			c.updateView()
 		case cmd, ok := <-prompt:
 			if !ok {
-				print("Goodbye")
+				c.print("Goodbye")
 				return
 			}
 			c.handleCmd(cmd)
@@ -436,63 +455,123 @@ func (c *ConnTapClient) handle() {
 }
 
 func (c *ConnTapClient) handleCmd(message string) {
-	parts := strings.Split(message, " ")
+	parts := strings.SplitN(message, " ", 2)
 	cmd := parts[0]
+	val := ""
+	if len(parts) == 2 {
+		val = parts[1]
+	}
+	args := strings.Split(message, " ")[1:]
 	switch cmd {
 	case "help":
-		printHelp()
-	case "list":
-		s := make([]string, 0)
-		for title, _ := range c.data.Conversations {
-			s = append(s, title)
-		}
-		if len(s) == 0 {
-			print("No conversations found")
-		} else {
-			print(strings.Join(s, "\n"))
-		}
+		c.printHelp()
+	case "inbox":
+		c.conversation = nil
+		c.printInbox()
+	case "users":
+		c.printUsers()
 	case "create":
-		title := parts[1]
 		c.userToSync <- &Tap{
 			Type:         TYPE_CONVERSATION,
-			Conversation: title,
+			Conversation: val,
 		}
+		c.updateView()
 	case "open":
-		title := parts[1]
-		conversation := c.data.Conversations[title]
-		if conversation == nil {
-			print("Conversation not found")
+		c.openConversation(val)
+	case "invite":
+		if c.conversation == nil {
+			c.print("You must open a conversation before you can invite users")
 			return
 		}
-		c.conversation = title
-		for _, message := range conversation.Messages {
-			print(message.User + ": " + message.Body)
-		}
-	case "invite":
 		c.userToSync <- &Tap{
 			Type:         TYPE_INVITE,
-			Conversation: c.conversation,
-			Value:        parts[1],
+			Conversation: c.conversation.Title,
+			Args:         args,
 		}
-	case "send":
+	case "send", "say":
+		if c.conversation == nil {
+			c.print("You must open a conversation to send a message")
+			return
+		}
 		c.userToSync <- &Tap{
 			Type:         TYPE_MESSAGE,
-			Conversation: c.conversation,
-			Value:        strings.Join(parts[1:], " "),
+			Conversation: c.conversation.Title,
+			Value:        val,
 		}
+		c.updateView()
 	case "close":
-		c.conversation = ""
-		print("")
+		c.conversation = nil
+		c.updateView()
+	case "exit":
+		os.Exit(0)
+	default:
+		if c.conversation != nil {
+			c.userToSync <- &Tap{
+				Type:         TYPE_MESSAGE,
+				Conversation: c.conversation.Title,
+				Value:        message,
+			}
+			c.printMessages()
+		} else {
+			c.printHelp()
+		}
 	}
-
 }
 
-func printHelp() {
-	print(`Available Commands:
-  list: list conversations
-  create <title> <participants>: create a conversation
+func (c *ConnTapClient) openConversation(title string) {
+	c.conversation = c.data.Conversations[title]
+	if c.conversation == nil {
+		c.print("Conversation %s not found", title)
+	} else {
+		c.printMessages()
+	}
+}
+
+func (c *ConnTapClient) updateView() {
+	if c.conversation == nil {
+		c.printInbox()
+	} else {
+		c.printMessages()
+	}
+}
+
+func (c *ConnTapClient) printInbox() {
+	inbox := make([]string, 0, len(c.data.Conversations))
+	for title, conversation := range c.data.Conversations {
+		inbox = append(inbox, title+"\n  "+conversation.LastMessage())
+	}
+	c.print(strings.Join(inbox, "\n"))
+}
+
+func (c *ConnTapClient) printMessages() {
+	messages := make([]string, 0, len(c.conversation.Messages))
+	for _, message := range c.conversation.Messages {
+		messages = append(messages, message.String())
+	}
+	c.print(strings.Join(messages, "\n"))
+}
+
+func (c *ConnTapClient) printUsers() {
+	header := "All Users:"
+	userSet := c.data.Users
+	users := make([]string, 0, len(c.data.Users))
+	if c.conversation != nil {
+		userSet = c.conversation.Users
+		header = c.conversation.Title + " Users:"
+	}
+	for user, _ := range userSet {
+		users = append(users, user)
+	}
+	c.print("%s\n\n%s", header, strings.Join(users, "\n"))
+}
+
+func (c *ConnTapClient) printHelp() {
+	c.print(`Available Commands:
+  inbox: go to inbox
+  create <title>: create a conversation
   open <title>: open a conversation in the window
-  invite <participant>: invite participants to a conversation
+  users: print users. If a conversation is open, print users in conversation
+  invite <participants>: invite participants to a conversation
   say <message>: Say something in the current conversation
   close: close the current conversation
   leave <title>: leave a conversation
@@ -501,8 +580,15 @@ func printHelp() {
 `)
 }
 
-func print(message string) {
-	// fmt.Print("\033[2J\033[1;1H\n\n\n\n\n\n\n\n\n\n\n\n\n\n$ ")
-	// fmt.Print("\0337\033[1;1H", message, "\0338")
-	fmt.Println(message)
+func (c *ConnTapClient) print(format string, a ...interface{}) {
+	message := fmt.Sprintf(format, a...)
+	curtitle := "inbox"
+	if c.conversation != nil {
+		curtitle = c.conversation.Title
+	}
+
+	fmt.Print("\033[2J\033[1;1H\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n" +
+		curtitle +
+		"$ ")
+	fmt.Print("\0337\033[1;1H", message, "\0338")
 }
