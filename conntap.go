@@ -105,6 +105,12 @@ func (d *Data) CreateConversation(tap *Tap) error {
 	}
 	if tap.Value != "" {
 		c.NewMessage(tap.User, tap.Value)
+	} else {
+		firstMessage := "Created conversation"
+		if len(tap.Args) > 0 {
+			firstMessage += " with " + strings.Join(tap.Args, ", ")
+		}
+		c.NewMessage(tap.User, firstMessage)
 	}
 	d.Conversations[c.Title] = c
 	return nil
@@ -251,6 +257,7 @@ func (s *ConnTapServer) processTaps() {
 
 		for user, tapChan := range s.tapChans {
 			if s.isRelevant(user, tap) {
+				fmt.Printf("Sending %s to %s\n", tap.Type, user)
 				notify(tapChan)
 			}
 		}
@@ -336,6 +343,9 @@ func (s *ConnTapServer) handle(inbox <-chan *Tap, outbox chan<- *Tap) {
 			for ; tapCursor < len(s.data.Taps); tapCursor++ {
 				tap := s.data.Taps[tapCursor]
 				if s.isRelevant(user, tap) {
+					if s.isInvitingUser(user, tap) {
+						s.replayConversation(tap, outbox)
+					}
 					outbox <- tap
 				}
 			}
@@ -343,8 +353,30 @@ func (s *ConnTapServer) handle(inbox <-chan *Tap, outbox chan<- *Tap) {
 	}
 }
 
+func (s *ConnTapServer) isInvitingUser(user string, tap *Tap) bool {
+	return tap.Type == TYPE_INVITE && gobro.Contains(tap.Args, user)
+}
+
+func (s *ConnTapServer) replayConversation(inviteTap *Tap, outbox chan<- *Tap) {
+	fmt.Printf("Replaying conversation: %s\n", inviteTap.Conversation)
+	for tapCursor := 0; tapCursor < inviteTap.Id; tapCursor++ {
+		tap := s.data.Taps[tapCursor]
+		if tap.Conversation == inviteTap.Conversation {
+			fmt.Printf("Replay: %s\n", tap.Type)
+			outbox <- tap
+		}
+	}
+}
+
 func (s *ConnTapServer) isRelevant(user string, tap *Tap) bool {
-	return true
+	switch tap.Type {
+	case TYPE_AUTH:
+		return true
+	case TYPE_CONVERSATION, TYPE_MESSAGE, TYPE_INVITE:
+		return s.data.Conversations[tap.Conversation].Users[user]
+	default:
+		return false
+	}
 }
 
 func notify(tapChan chan<- bool) {
@@ -405,10 +437,11 @@ func (c *ConnTapClient) sync(inbox <-chan *Tap, outbox chan<- *Tap) {
 			if !ok {
 				return
 			}
+			fmt.Printf("%s received: %s\n", c.user, tap.Type)
 			err := c.data.Update(tap)
 			if err != nil {
-				c.print("error: %v", err)
-				return
+				fmt.Printf("%s encountered error processing %s: %s\n", c.user, tap.Type, err.Error())
+				continue
 			}
 			c.syncToUser <- tap
 		case tap, ok := <-c.userToSync:
@@ -580,13 +613,16 @@ func (c *ConnTapClient) printHelp() {
 
   From the inbox:
     inbox: show the inbox
-    create <title>: create a conversation
+    create <title> [:<participants>, ...]: create a conversation
+    	To include participants, put ':' followed by comma-separated list of users
+    	For example:
+    	$ create Good Apples : John Apple, Fred Pear, Bob Watermelon
     open <title>: open a conversation in the window
     users: show all users
     leave <title>: leave a conversation
   From a conversation:
     users: show users in conversation
-    invite <participants>: invite participants to conversation
+    invite <participants>: invite list of comma-separated participants to conversation
     close: close the current conversation (go back to the inbox)
     <message>: Say something in the current conversation
   From anywhere:
