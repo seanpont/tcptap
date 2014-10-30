@@ -61,7 +61,7 @@ func TestIsRelevant(t *testing.T) {
 	sean.userToSync <- NewTap(TYPE_CONVERSATION, "sean", "apples", "tasty", "john")
 	assert.True(drain(1, sean), "")
 	assert.Equal(len(sean.data.Conversations["apples"].Users), 2)
-	assert.False(server.data.Conversations["apples"].Users["alex"], "")
+	assert.False(server.data.Conversations["apples"].Users["alex"] > 0, "")
 
 	// alex does not get the conversation
 	assert.False(drain(1, alex), "")

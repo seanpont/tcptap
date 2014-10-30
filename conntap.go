@@ -12,14 +12,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	_ "time"
 )
 
 // ===== MODEL ===============================================================
 
 type Message struct {
-	User string
-	Body string
+	TapId int
+	User  string
+	Body  string
 }
 
 func (m *Message) String() string {
@@ -27,8 +27,9 @@ func (m *Message) String() string {
 }
 
 type Conversation struct {
+	TapId    int
 	Title    string
-	Users    map[string]bool
+	Users    map[string]int
 	Messages []*Message
 }
 
@@ -36,29 +37,33 @@ func (c *Conversation) String() string {
 	return c.Title
 }
 
-func (c *Conversation) LastMessage() string {
+func (c *Conversation) LastMessage() *Message {
 	last := len(c.Messages) - 1
 	if last >= 0 {
-		return c.Messages[last].String()
+		return c.Messages[last]
 	} else {
-		return ""
+		return &Message{}
 	}
 }
 
-func (c *Conversation) NewMessage(user, message string) {
-	c.Messages = append(c.Messages, &Message{User: user, Body: message})
+func (c *Conversation) NewMessage(tap *Tap) {
+	c.Messages = append(c.Messages, &Message{
+		TapId: tap.Id,
+		User:  tap.User,
+		Body:  tap.Value,
+	})
 }
 
 type Data struct {
 	Taps          []*Tap
-	Users         map[string]bool
+	Users         map[string]int
 	Conversations map[string]*Conversation
 }
 
 func NewData() *Data {
 	return &Data{
 		Taps:          make([]*Tap, 0),
-		Users:         make(map[string]bool),
+		Users:         make(map[string]int),
 		Conversations: make(map[string]*Conversation),
 	}
 }
@@ -81,7 +86,7 @@ func (d *Data) CreateUser(tap *Tap) error {
 	if tap.User == "" {
 		return errors.New("User name required")
 	}
-	d.Users[tap.User] = true
+	d.Users[tap.User] = tap.Id
 	return nil
 }
 
@@ -94,24 +99,24 @@ func (d *Data) CreateConversation(tap *Tap) error {
 		return errors.New("Conversation '" + title + "' already exists")
 	}
 	c := &Conversation{
+		TapId:    tap.Id,
 		Title:    title,
-		Users:    make(map[string]bool, 0),
+		Users:    make(map[string]int, 0),
 		Messages: make([]*Message, 0),
 	}
-	c.Users[tap.User] = true
+	c.Users[tap.User] = tap.Id
 	for _, user := range tap.Args {
-		d.Users[user] = true
-		c.Users[user] = true
+		d.Users[user] = tap.Id
+		c.Users[user] = tap.Id
 	}
-	if tap.Value != "" {
-		c.NewMessage(tap.User, tap.Value)
-	} else {
+	if tap.Value == "" {
 		firstMessage := "Created conversation"
 		if len(tap.Args) > 0 {
 			firstMessage += " with " + strings.Join(tap.Args, ", ")
 		}
-		c.NewMessage(tap.User, firstMessage)
+		tap.Value = firstMessage
 	}
+	c.NewMessage(tap)
 	d.Conversations[c.Title] = c
 	return nil
 }
@@ -124,7 +129,7 @@ func (d *Data) SendMessage(tap *Tap) error {
 	if c == nil {
 		return errors.New("Conversation '" + tap.Conversation + "' not found")
 	}
-	c.NewMessage(tap.User, tap.Value)
+	c.NewMessage(tap)
 	return nil
 }
 
@@ -137,11 +142,11 @@ func (d *Data) Invite(tap *Tap) error {
 		return errors.New("Conversation '" + tap.Conversation + "' not found")
 	}
 	for _, user := range tap.Args {
-		d.Users[user] = true
-		c.Users[user] = true
+		d.Users[user] = tap.Id
+		c.Users[user] = tap.Id
 	}
-	c.NewMessage(tap.User,
-		fmt.Sprintf("%s invited %s", tap.User, strings.Join(tap.Args, ", ")))
+	tap.Value = fmt.Sprintf("%s invited %s", tap.User, strings.Join(tap.Args, ", "))
+	c.NewMessage(tap)
 	return nil
 }
 
@@ -245,14 +250,13 @@ func NewConnTapServer() *ConnTapServer {
 func (s *ConnTapServer) processTaps() {
 	for {
 		tap := <-s.tapCore
+		tap.Id = len(s.data.Taps)
 		fmt.Println("Processing: ", tap)
 		err := s.data.Update(tap)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			continue
 		}
-
-		tap.Id = len(s.data.Taps)
 		s.data.Taps = append(s.data.Taps, tap)
 
 		for user, tapChan := range s.tapChans {
@@ -373,7 +377,9 @@ func (s *ConnTapServer) isRelevant(user string, tap *Tap) bool {
 	case TYPE_AUTH:
 		return true
 	case TYPE_CONVERSATION, TYPE_MESSAGE, TYPE_INVITE:
-		return s.data.Conversations[tap.Conversation].Users[user]
+		// User must be in conversation AND must have been joined prior to this tap
+		membershipId := s.data.Conversations[tap.Conversation].Users[user]
+		return membershipId > 0 && membershipId <= tap.Id
 	default:
 		return false
 	}
@@ -395,11 +401,13 @@ func connTapClient(args []string) {
 }
 
 type ConnTapClient struct {
-	user         string
-	data         *Data
-	conversation *Conversation
-	userToSync   chan *Tap
-	syncToUser   chan *Tap
+	user           string
+	data           *Data
+	conversation   *Conversation
+	userToSync     chan *Tap
+	syncToUser     chan *Tap
+	isViewingUsers bool
+	isViewingHelp  bool
 }
 
 func NewConnTapClient(user string) *ConnTapClient {
@@ -470,7 +478,7 @@ func (c *ConnTapClient) handle() {
 		}
 	}()
 
-	c.printHelp()
+	c.printHelp(true)
 
 	for {
 		select {
@@ -491,6 +499,9 @@ func (c *ConnTapClient) handle() {
 }
 
 func (c *ConnTapClient) handleCmd(message string) {
+	c.isViewingUsers = false
+	c.isViewingHelp = false
+
 	parts := strings.SplitN(message, " ", 2)
 	cmd := parts[0]
 	val := ""
@@ -501,11 +512,11 @@ func (c *ConnTapClient) handleCmd(message string) {
 	if c.conversation == nil {
 		switch cmd {
 		case "help":
-			c.printHelp()
+			c.printHelp(true)
 		case "exit":
 			os.Exit(0)
 		case "users":
-			c.printUsers()
+			c.printUsers(true)
 		case "inbox":
 			c.printInbox(true)
 		case "create":
@@ -514,16 +525,16 @@ func (c *ConnTapClient) handleCmd(message string) {
 		case "open":
 			c.openConversation(val)
 		default:
-			c.printHelp()
+			c.printHelp(true)
 		}
 	} else {
 		switch cmd {
 		case "help":
-			c.printHelp()
+			c.printHelp(true)
 		case "exit":
 			os.Exit(0)
 		case "users":
-			c.printUsers()
+			c.printUsers(true)
 		case "invite":
 			c.inviteUsers(val)
 			c.printMessages(true)
@@ -577,7 +588,11 @@ func (c *ConnTapClient) openConversation(title string) {
 }
 
 func (c *ConnTapClient) updateView() {
-	if c.conversation == nil {
+	if c.isViewingUsers {
+		c.printUsers(false)
+	} else if c.isViewingHelp {
+		// do nothing
+	} else if c.conversation == nil {
 		c.printInbox(false)
 	} else {
 		c.printMessages(false)
@@ -587,7 +602,7 @@ func (c *ConnTapClient) updateView() {
 func (c *ConnTapClient) printInbox(clearView bool) {
 	inbox := make([]string, 0, 20)
 	for title, conversation := range c.data.Conversations {
-		inbox = append(inbox, title+"\n  "+conversation.LastMessage())
+		inbox = append(inbox, title+"\n  "+conversation.LastMessage().String())
 		if len(inbox) == 18 {
 			break
 		}
@@ -615,7 +630,8 @@ func (c *ConnTapClient) printMessages(clearView bool) {
 	}
 }
 
-func (c *ConnTapClient) printUsers() {
+func (c *ConnTapClient) printUsers(clearView bool) {
+	c.isViewingUsers = true
 	header := "All users:"
 	userSet := c.data.Users
 	users := make([]string, 0, len(c.data.Users))
@@ -626,11 +642,18 @@ func (c *ConnTapClient) printUsers() {
 	for user, _ := range userSet {
 		users = append(users, user)
 	}
-	c.print("%s\n  %s", header, strings.Join(users, "\n  "))
+	content := fmt.Sprintf("%s\n  %s", header, strings.Join(users, "\n  "))
+	if clearView {
+		c.print(content)
+	} else {
+		c.updateContent(content)
+	}
+
 }
 
-func (c *ConnTapClient) printHelp() {
-	c.print(`Available Commands:
+func (c *ConnTapClient) printHelp(clearView bool) {
+	c.isViewingHelp = true
+	content := `Available Commands:
 
   From the inbox:
     inbox: show the inbox
@@ -649,30 +672,42 @@ func (c *ConnTapClient) printHelp() {
   From anywhere:
     exit: exit the program (and leave the current conversation)
     help: Show this help screen
-`)
+`
+	if clearView {
+		c.print(content)
+	} else {
+		c.updateContent(content)
+	}
 }
 
 func (c *ConnTapClient) print(format string, a ...interface{}) {
 	content := fmt.Sprintf(format, a...)
-
 	// ensure that it is 20 lines long
 	numLines := strings.Count(content, "\n")
 	for i := numLines; i < 20; i++ {
 		content += "\n"
 	}
 
-	prompt := "inbox$ "
+	header := "Inbox"
 	if c.conversation != nil {
-		prompt = c.conversation.Title + "$ "
+		header = c.conversation.Title
 	}
+	divider := "\n================================\n"
+	prompt := c.user + "$ "
 
-	fmt.Print("\033[2J\033[1;1H" + content + "\n" + prompt)
+	fmt.Print("\033[2J\033[1;1H" + header + divider + content + "\n" + prompt)
 }
 
 func (c *ConnTapClient) updateContent(format string, a ...interface{}) {
 	content := fmt.Sprintf(format, a...)
 
+	header := "Inbox"
+	if c.conversation != nil {
+		header = c.conversation.Title
+	}
+	divider := "\n================================\n"
+
 	fmt.Print("\033[s\033[1;1H" +
-		strings.Repeat("\033[K\033[1B", 20) +
-		"\033[1;1H" + content + "\033[u")
+		strings.Repeat("\033[K\033[1B", 22) +
+		"\033[1;1H" + header + divider + content + "\033[u")
 }
