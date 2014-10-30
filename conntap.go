@@ -437,10 +437,11 @@ func (c *ConnTapClient) sync(inbox <-chan *Tap, outbox chan<- *Tap) {
 			if !ok {
 				return
 			}
-			fmt.Printf("%s received: %s\n", c.user, tap.Type)
+			// fmt.Printf("%s received: %s\n", c.user, tap.Type)
 			err := c.data.Update(tap)
 			if err != nil {
-				fmt.Printf("%s encountered error processing %s: %s\n", c.user, tap.Type, err.Error())
+				// fmt.Printf("%s encountered error processing %s: %s\n",
+				// c.user, tap.Type, err.Error())
 				continue
 			}
 			c.syncToUser <- tap
@@ -496,53 +497,73 @@ func (c *ConnTapClient) handleCmd(message string) {
 	if len(parts) == 2 {
 		val = parts[1]
 	}
-	args := strings.Split(message, " ")[1:]
 
-	switch cmd {
-	case "help":
-		c.printHelp()
-	case "inbox":
-		c.conversation = nil
-		c.printInbox(true)
-	case "users":
-		c.printUsers()
-	case "create":
-		if c.conversation == nil {
+	if c.conversation == nil {
+		switch cmd {
+		case "help":
+			c.printHelp()
+		case "exit":
+			os.Exit(0)
+		case "users":
+			c.printUsers()
+		case "inbox":
+			c.printInbox(true)
+		case "create":
+			c.createConversation(val)
+			c.printInbox(true)
+		case "open":
+			c.openConversation(val)
+		default:
+			c.printHelp()
 		}
-		c.userToSync <- &Tap{
-			Type:         TYPE_CONVERSATION,
-			Conversation: val,
-		}
-		c.printInbox(true)
-	case "open":
-		c.openConversation(val)
-	case "invite":
-		if c.conversation == nil {
-			c.print("You must open a conversation before you can invite users")
-			return
-		}
-		c.userToSync <- &Tap{
-			Type:         TYPE_INVITE,
-			Conversation: c.conversation.Title,
-			Args:         args,
-		}
-		c.printMessages(true)
-	case "close":
-		c.conversation = nil
-		c.printInbox(true)
-	case "exit":
-		os.Exit(0)
-	default:
-		if c.conversation != nil {
+	} else {
+		switch cmd {
+		case "help":
+			c.printHelp()
+		case "exit":
+			os.Exit(0)
+		case "users":
+			c.printUsers()
+		case "invite":
+			c.inviteUsers(val)
+			c.printMessages(true)
+		case "close":
+			c.conversation = nil
+			c.printInbox(true)
+		default:
 			c.userToSync <- &Tap{
 				Type:         TYPE_MESSAGE,
 				Conversation: c.conversation.Title,
 				Value:        message,
 			}
 			c.printMessages(true)
-		} else {
-			c.printHelp()
 		}
+	}
+}
+
+func (c *ConnTapClient) inviteUsers(args string) {
+	users := strings.Split(args, ",")
+	gobro.TrimAll(users)
+	c.userToSync <- &Tap{
+		Type:         TYPE_INVITE,
+		Conversation: c.conversation.Title,
+		Args:         users,
+	}
+}
+
+func (c *ConnTapClient) createConversation(args string) {
+	titleAndUsers := strings.SplitN(args, ":", 2)
+	title := strings.Trim(titleAndUsers[0], " ")
+	var users []string
+	if len(titleAndUsers) == 2 {
+		users = strings.Split(titleAndUsers[1], ",")
+		gobro.TrimAll(users)
+	}
+
+	c.userToSync <- &Tap{
+		Type:         TYPE_CONVERSATION,
+		Conversation: title,
+		Args:         users,
 	}
 }
 
@@ -614,9 +635,9 @@ func (c *ConnTapClient) printHelp() {
   From the inbox:
     inbox: show the inbox
     create <title> [:<participants>, ...]: create a conversation
-    	To include participants, put ':' followed by comma-separated list of users
+    	To include participants, put ':' followed by comma-separated list of users.
     	For example:
-    	$ create Good Apples : John Apple, Fred Pear, Bob Watermelon
+    	$ create Good Apples: John Apple, Fred Pear, Bob Watermelon
     open <title>: open a conversation in the window
     users: show all users
     leave <title>: leave a conversation
