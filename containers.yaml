@@ -1,0 +1,8 @@
+version: 1
+containers:
+- name: tcptap
+  image: seanpont/tcptap
+  ports:
+  - name: http
+    hostPort: 80
+    containerPort: 8080

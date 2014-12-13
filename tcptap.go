@@ -1,12 +1,12 @@
 package main
 
 import (
-	"github.com/seanpont/gobro"
+	"github.com/seanpont/gobro/commander"
 	"os"
 )
 
 func main() {
-	gobro.NewCommandMap(
+	commander.NewCommandMap(
 		simpleTapServer,
 		connTapServer,
 		connTapClient).Run(os.Args)

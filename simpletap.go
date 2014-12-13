@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/seanpont/gobro"
+	"github.com/seanpont/gobro/commander"
 	"io"
 	"net"
 	"strings"
@@ -12,7 +13,7 @@ import (
 // ===== SERVER ==============================================================
 
 func simpleTapServer(args []string) {
-	gobro.CheckArgs(args, 1, "Usage: tcptap SimpleTap <port>")
+	commander.CheckArgs(args, 1, "Usage: tcptap SimpleTap <port>")
 	NewSimpleServer().listen(args[0])
 }
 

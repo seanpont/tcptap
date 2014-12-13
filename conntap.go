@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/seanpont/gobro"
+	"github.com/seanpont/gobro/commander"
+	"github.com/seanpont/gobro/strarr"
 	"io"
 	"net"
 	"os"
@@ -233,7 +235,7 @@ type ConnTapServer struct {
 }
 
 func connTapServer(args []string) {
-	gobro.CheckArgs(args, 1, "Usage: tcptap streamTapServer <port>")
+	commander.CheckArgs(args, 1, "Usage: tcptap streamTapServer <port>")
 	NewConnTapServer().listen(args[0])
 }
 
@@ -358,7 +360,7 @@ func (s *ConnTapServer) handle(inbox <-chan *Tap, outbox chan<- *Tap) {
 }
 
 func (s *ConnTapServer) isInvitingUser(user string, tap *Tap) bool {
-	return tap.Type == TYPE_INVITE && gobro.Contains(tap.Args, user)
+	return tap.Type == TYPE_INVITE && strarr.Contains(tap.Args, user)
 }
 
 func (s *ConnTapServer) replayConversation(inviteTap *Tap, outbox chan<- *Tap) {
@@ -395,8 +397,8 @@ func notify(tapChan chan<- bool) {
 // ===== Client ==============================================================
 
 func connTapClient(args []string) {
-	gobro.CheckArgs(args, 1, "Usage: tcptap connTapClient <host:port>")
-	name, _ := gobro.Prompt("Please enter your name: ")
+	commander.CheckArgs(args, 1, "Usage: tcptap connTapClient <host:port>")
+	name, _ := commander.Prompt("Please enter your name: ")
 	NewConnTapClient(name).connect(args[0])
 }
 
@@ -554,7 +556,7 @@ func (c *ConnTapClient) handleCmd(message string) {
 
 func (c *ConnTapClient) inviteUsers(args string) {
 	users := strings.Split(args, ",")
-	gobro.TrimAll(users)
+	strarr.TrimAll(users)
 	c.userToSync <- &Tap{
 		Type:         TYPE_INVITE,
 		Conversation: c.conversation.Title,
@@ -568,7 +570,7 @@ func (c *ConnTapClient) createConversation(args string) {
 	var users []string
 	if len(titleAndUsers) == 2 {
 		users = strings.Split(titleAndUsers[1], ",")
-		gobro.TrimAll(users)
+		strarr.TrimAll(users)
 	}
 
 	c.userToSync <- &Tap{
